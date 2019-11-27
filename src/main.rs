@@ -3,12 +3,24 @@ use std::os::unix::net::{UnixStream,UnixListener};
 use std::thread;
 use std::ops::Add;
 
-fn handle_client(stream: UnixStream) {
+use serde::{Serialize, Deserialize};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum MsgTypes {
+    register,
+    ok,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Message {
+    header: MsgTypes,
+    value: String,
+}
+
+fn handle_client(stream: UnixStream, clients: Arc<Mutex<HashMap<String, MsgTypes>>>) {
     let read_server = BufReader::new(&stream);
-
-    let client = UnixStream::connect("/tmp/app-uds.sock").unwrap();
-
-    let mut write_client = BufWriter::new(&client);
 
     let srs = read_server;
     for res in srs.lines() {
@@ -17,11 +29,35 @@ fn handle_client(stream: UnixStream) {
                 if line.len() == 0 {
                     break;
                 }
-                println!("{}", line);
-                line = line.add("\n\n");
-                let bytes_wrote: usize = write_client.write(line.as_bytes()).unwrap();
-                println!("{}", bytes_wrote);
-                write_client.flush();
+                println!("sent {}", line);
+
+                let msg = serde_json::from_str(&line.as_str());
+                let msg: Message = match msg {
+                    Ok(msg) => {
+                        msg
+                    },
+                    _ => {
+                        println!("{}", "Bad Message!");
+                        return;
+                    }
+                };
+
+                match msg.header {
+                    MsgTypes::register => {
+                        let tmp = msg.clone();
+                        clients.lock().unwrap().insert(tmp.value, tmp.header);
+
+                        let client = UnixStream::connect(&msg.value).unwrap();
+                        let mut write_client = BufWriter::new(&client);
+
+                        write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
+                        write_client.write(b"\n");
+                        write_client.flush();
+                    },
+                    _ => {
+
+                    }
+                }
 
                 let read_client = BufReader::new(&client);
                 let mut write_server = BufWriter::new(&stream);
@@ -32,7 +68,7 @@ fn handle_client(stream: UnixStream) {
                             if line.len() == 0 {
                                 break;
                             }
-                            println!("{}", line);
+                            println!("recv {}", line);
                             line = line.add("\n\n");
                             let bytes_wrote: usize = write_server.write(line.as_bytes()).unwrap();
                             println!("{}", bytes_wrote);
@@ -47,13 +83,23 @@ fn handle_client(stream: UnixStream) {
     }
 }
 
+fn remove_socket(path: &String) {
+    std::fs::remove_file(path);
+}
+
 fn main() {
-    let server = UnixListener::bind("/tmp/rust-uds.sock").unwrap();
+    let socket = String::from("/tmp/rust-uds.sock");
+
+    remove_socket(&socket);
+    let server = UnixListener::bind(socket).unwrap();
+
+    let clients = Arc::new(Mutex::new(HashMap::new()));
 
     for stream in server.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(|| handle_client(stream));
+                let w = clients.clone();
+                thread::spawn(move || handle_client(stream, w));
             }
             Err(err) => {
                 println!("Error: {}", err);
