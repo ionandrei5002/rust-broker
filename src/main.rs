@@ -28,7 +28,7 @@ fn register_client(msg: &Message, clients: &Arc<Mutex<HashMap<String, MsgTypes>>
     let mut write_client = BufWriter::new(&client);
 
     write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
-    write_client.write(b"\n\n");
+    write_client.write(b"\n");
     write_client.flush();
 }
 
@@ -41,7 +41,7 @@ fn broadcast_command(msg: &Message, clients: &Arc<Mutex<HashMap<String, MsgTypes
         let mut write_client = BufWriter::new(&client);
 
         write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
-        write_client.write(b"\n\n");
+        write_client.write(b"\n");
         write_client.flush();
 
         let read_client = BufReader::new(&client);
@@ -54,7 +54,7 @@ fn broadcast_command(msg: &Message, clients: &Arc<Mutex<HashMap<String, MsgTypes
                     }
                     println!("recv {}", line);
 
-                    line = line.add("\n\n");
+                    line = line.add("\n");
                     let bytes_wrote: usize = write_server.write(line.as_bytes()).unwrap();
                     println!("{}", bytes_wrote);
                     write_server.flush();
