@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 enum MsgTypes {
     register,
     ok,
+    command,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,8 +20,54 @@ struct Message {
     value: String,
 }
 
+fn register_client(msg: &Message, clients: &Arc<Mutex<HashMap<String, MsgTypes>>>) {
+    let tmp = msg.clone();
+    clients.lock().unwrap().insert(tmp.value, tmp.header);
+
+    let client = UnixStream::connect(&msg.value).unwrap();
+    let mut write_client = BufWriter::new(&client);
+
+    write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
+    write_client.write(b"\n\n");
+    write_client.flush();
+}
+
+fn broadcast_command(msg: &Message, clients: &Arc<Mutex<HashMap<String, MsgTypes>>>, stream: &UnixStream) {
+    let mut write_server = BufWriter::new(stream);
+
+    let w = clients.lock().unwrap();
+    for c in w.iter() {
+        let client = UnixStream::connect(c.0).unwrap();
+        let mut write_client = BufWriter::new(&client);
+
+        write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
+        write_client.write(b"\n\n");
+        write_client.flush();
+
+        let read_client = BufReader::new(&client);
+        let trs = read_client;
+        for client_res in trs.lines() {
+            match client_res {
+                Ok(mut line) => {
+                    if line.len() == 0 {
+                        break;
+                    }
+                    println!("recv {}", line);
+
+                    line = line.add("\n\n");
+                    let bytes_wrote: usize = write_server.write(line.as_bytes()).unwrap();
+                    println!("{}", bytes_wrote);
+                    write_server.flush();
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
 fn handle_client(stream: UnixStream, clients: Arc<Mutex<HashMap<String, MsgTypes>>>) {
     let read_server = BufReader::new(&stream);
+    let mut write_server = BufWriter::new(&stream);
 
     let srs = read_server;
     for res in srs.lines() {
@@ -29,7 +76,6 @@ fn handle_client(stream: UnixStream, clients: Arc<Mutex<HashMap<String, MsgTypes
                 if line.len() == 0 {
                     break;
                 }
-                println!("sent {}", line);
 
                 let msg = serde_json::from_str(&line.as_str());
                 let msg: Message = match msg {
@@ -44,37 +90,10 @@ fn handle_client(stream: UnixStream, clients: Arc<Mutex<HashMap<String, MsgTypes
 
                 match msg.header {
                     MsgTypes::register => {
-                        let tmp = msg.clone();
-                        clients.lock().unwrap().insert(tmp.value, tmp.header);
-
-                        let client = UnixStream::connect(&msg.value).unwrap();
-                        let mut write_client = BufWriter::new(&client);
-
-                        write_client.write(serde_json::to_string(&msg).unwrap().as_bytes());
-                        write_client.write(b"\n");
-                        write_client.flush();
+                        register_client(&msg, &clients);
                     },
                     _ => {
-
-                    }
-                }
-
-                let read_client = BufReader::new(&client);
-                let mut write_server = BufWriter::new(&stream);
-                let trs = read_client;
-                for client_res in trs.lines() {
-                    match client_res {
-                        Ok(mut line) => {
-                            if line.len() == 0 {
-                                break;
-                            }
-                            println!("recv {}", line);
-                            line = line.add("\n\n");
-                            let bytes_wrote: usize = write_server.write(line.as_bytes()).unwrap();
-                            println!("{}", bytes_wrote);
-                            write_server.flush();
-                        },
-                        _ => {}
+                        broadcast_command(&msg, &clients, &stream);
                     }
                 }
             },
